@@ -87,34 +87,57 @@ def build_point_in_time_universe(all_data, liquidity_threshold=0.5):
 
     print("Building point-in-time universe...")
 
-    # Combine all data into a single DataFrame
-    combined = pd.concat(all_data.values(), ignore_index=False)
-    combined.reset_index(inplace=True)
-    combined.rename(columns={'Date': 'date'}, inplace=True)
+    # Collect all unique dates first
+    all_dates = set()
+    for df in all_data.values():
+        all_dates.update(df.index)
+    all_dates = pd.to_datetime(sorted(all_dates))
+    print(f"Total unique dates: {len(all_dates)}")
 
-    # Calculate daily turnover (proxy for liquidity)
-    combined['turnover'] = combined['Close'] * combined['Volume']
+    # Dictionary to hold daily records: date -> list of (ticker, turnover)
+    daily_records = {date: [] for date in all_dates}
 
-    #For each date, determine which stocks are valid
+    # Process each ticker individually (memory-friendly)
+    for ticker, df in all_data.items():
+        df = df.copy()
+        df.index = pd.to_datetime(df.index)
+        
+        # Calculate turnover
+        if 'Volume' in df.columns and 'Close' in df.columns:
+            df['turnover'] = df['Close'] * df['Volume']
+        else:
+            continue  # Skip if missing required columns
+
+        for date, row in df.iterrows():
+            if date in daily_records:
+                # Basic filters: valid price and non-zero volume
+                if row['Volume'] > 0 and row['Close'] > 0 and pd.notna(row['turnover']):
+                    daily_records[date].append({
+                        'ticker': ticker,
+                        'turnover': row['turnover']
+                    })
+
+    # Build universe records date by date
     universe_records = []
+    for date in all_dates:
+        day_data = daily_records[date]
+        n_raw = len(day_data)
 
-    dates = combined['date'].unique()
-    dates = pd.to_datetime(dates).sort_values()
+        if n_raw == 0:
+            universe_records.append({
+                'date': date,
+                'tickers': [],
+                'n_tickers': 0
+            })
+            continue
 
-    for date in dates:
-        day_data = combined[combined['date'] == date].copy()
+        # Convert to DataFrame for filtering
+        valid = pd.DataFrame(day_data)
 
-        # Basic filters
-        valid = day_data[
-            (day_data['Volume'] > 0) & 
-            (day_data['Close'] > 0) & 
-            (day_data['turnover'].notna())
-        ].copy()
-
-        # Liquidity filter: top 300 by 6-month rolling average saily turnover
+        # Liquidity filter: relaxed threshold
         if len(valid) > 300:
             turnover_median = valid['turnover'].median()
-            valid = valid[valid['turnover'] >= turnover_median * 0.1]  # Relaxed threshold
+            valid = valid[valid['turnover'] >= turnover_median * 0.1]
 
         tickers_on_date = valid['ticker'].tolist()
         universe_records.append({
@@ -126,10 +149,10 @@ def build_point_in_time_universe(all_data, liquidity_threshold=0.5):
     universe_df = pd.DataFrame(universe_records)
     universe_df.set_index('date', inplace=True)
 
-    # Save 
+    # Save
     universe_df.to_parquet(UNIVERSE_DIR / "point_in_time_universe.parquet")
 
-    print(f"Universe built with {len(universe_df)} dates. Saved to {UNIVERSE_DIR / 'point_in_time_universe.parquet'}")
+    print(f"Universe built with {len(universe_df)} dates.")
     print(f"Average number of tickers per date: {universe_df['n_tickers'].mean():.0f}")
 
     return universe_df
