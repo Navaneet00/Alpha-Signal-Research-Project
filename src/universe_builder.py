@@ -49,7 +49,14 @@ def download_full_history_for_universe(tickers, start_date="2015-01-01", end_dat
             yf_ticker = f"{ticker}.NS"
             df = yf.download(yf_ticker, start=start_date, end=end_date, progress=False)
 
-            if len(df) > 100: # Minimum trading history threshold
+            if len(df) > 100:
+                # FIX: Flatten MultiIndex columns from yfinance
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                
+                # Drop any rows with all NaNs
+                df.dropna(how='all', inplace=True)
+                
                 df['ticker'] = ticker
                 all_data[ticker] = df
                 print(f"[{i+1}/{len(tickers)}] Downloaded {ticker} with {len(df)} records.")
@@ -102,19 +109,22 @@ def build_point_in_time_universe(all_data, liquidity_threshold=0.5):
         df = df.copy()
         df.index = pd.to_datetime(df.index)
         
-        # Calculate turnover
-        if 'Volume' in df.columns and 'Close' in df.columns:
-            df['turnover'] = df['Close'] * df['Volume']
-        else:
-            continue  # Skip if missing required columns
+        # Ensure columns are flat (defensive)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-        for date, row in df.iterrows():
+        # Calculate turnover
+        df['turnover'] = df['Close'] * df['Volume']
+
+        # FIX: Iterate using .itertuples() for scalar access
+        for row in df.itertuples(index=True):
+            date = row.Index
             if date in daily_records:
-                # Basic filters: valid price and non-zero volume
-                if row['Volume'] > 0 and row['Close'] > 0 and pd.notna(row['turnover']):
+                # Scalar comparisons now work correctly
+                if row.Volume > 0 and row.Close > 0 and pd.notna(row.turnover):
                     daily_records[date].append({
                         'ticker': ticker,
-                        'turnover': row['turnover']
+                        'turnover': row.turnover
                     })
 
     # Build universe records date by date
@@ -170,14 +180,14 @@ def validate_universe(universe_df):
 
     # Check 1: Number of tickers should vary over time
     n_tickers_series = universe_df['n_tickers']
-    print(f"\nTickers per day - Min: {n_tickers_series.min()}, Max: {n_tickers_series.max()}, Mean: {n_tickers_series.mean():.0f}, Std: {n_tickers_series.std():.0f}")
+    print(f"Tickers per day - Min: {n_tickers_series.min()}, Max: {n_tickers_series.max()}, Mean: {n_tickers_series.mean():.0f}, Std: {n_tickers_series.std():.0f}")
 
     # Check 2: Specific delisted stock example
     # Example: DHFL was delisted in 2021
     delisted_example = 'DHFL'
     post_delist = universe_df[universe_df.index > "2021-01-01"]['tickers']
     dhfl_present = any(delisted_example in tickers for tickers in post_delist)
-    print(f"\nDelisted stock {delisted_example} present after delisting? {'FAIL - BIAS DETECTED' if dhfl_present else 'PASS - NO BIAS DETECTED'}")
+    print(f"Delisted stock {delisted_example} present after delisting? {'FAIL - BIAS DETECTED' if dhfl_present else 'PASS - NO BIAS DETECTED'}")
 
     # Check 3: Plot universe size over time
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -191,7 +201,7 @@ def validate_universe(universe_df):
     plt.savefig(UNIVERSE_DIR / "universe_size_over_time.png", dpi=300)
     plt.show()
 
-    print(f"\n Validation plot saved to {UNIVERSE_DIR / 'universe_size_over_time.png'}")
+    print(f"Validation plot saved to {UNIVERSE_DIR / 'universe_size_over_time.png'}")
     return True
 
 
@@ -212,4 +222,4 @@ if __name__ == "__main__":
     # Step 4: Validate universe
     validate_universe(universe)
 
-    print("\nPoint-in-time universe construction and validation complete.")
+    print("Point-in-time universe construction and validation complete.")
